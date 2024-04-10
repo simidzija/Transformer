@@ -565,7 +565,10 @@ class CrossEntropyLoss(nn.Module):
 
         # z_n := x_{n, y_n}
         grid = torch.meshgrid(*map(torch.arange, y.shape), indexing='ij')
-        z = x[grid[0], torch.clamp(y, 0, x.size(1) - 1), *grid[1:]]
+        grid = ((grid[0], torch.clamp(y, 0, x.size(1) - 1)) + 
+                tuple(g for g in grid[1:])
+            )
+        z = x[grid]
 
         # l_n = -z_n + log(sum_c(exp(x_{n,c})))
         l = -z + x.exp().sum(1).log()
