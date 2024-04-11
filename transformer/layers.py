@@ -68,9 +68,11 @@ class Dropout(nn.Module):
         self.p = p
 
     def forward(self, x: Tensor) -> Tensor:
+        device = x.device
+
         # only apply dropout in training mode
         if self.training:
-            mask = torch.rand(x.shape) < self.p
+            mask = torch.rand(x.shape, device=device) < self.p
             x[mask] = 0
             return x / (1 - self.p)
 
@@ -246,22 +248,32 @@ class MaskedMultiheadAttention(nn.Module):
 
         self.d_model = d_model
         self.num_heads = num_heads
-        self.dropout = dropout
+        self.p_drop = dropout
         self.head_size = d_model // num_heads
         
+        # projection matrices
         self.wq = nn.Parameter(torch.rand(num_heads, d_model, self.head_size))
         self.wk = nn.Parameter(torch.rand(num_heads, d_model, self.head_size))
         self.wv = nn.Parameter(torch.rand(num_heads, d_model, self.head_size))
+
+        # post-concatenation matrix
         self.wo = nn.Parameter(torch.rand(d_model, d_model))
+
+        # mask
+        mask = torch.full((1000, 1000), -torch.inf).triu(1)
+        self.register_buffer('mask', mask)
+
+        # softmax
+        self.softmax = Softmax(-1)
+
+        # dropout
+        self.dropout = Dropout(dropout)
 
     def forward(self, x: Tensor) -> Tensor:
         
         # number of tokens in each sequence
         seq_len = x.size(-2)
         
-        # create mask with 0 on and below main diag, -inf above
-        mask = torch.full((seq_len, seq_len), -torch.inf).triu(1)
-
         # add new "head" dimension to x
         x.unsqueeze_(-3)
 
@@ -273,14 +285,13 @@ class MaskedMultiheadAttention(nn.Module):
         # scaled and masked attention scores
         scores = q @ k.transpose(-1, -2)
         scores /= math.sqrt(self.head_size)
-        scores += mask
+        scores += self.mask[:seq_len, :seq_len]
 
         # attention weights
-        weights = Softmax(-1)(scores)
+        weights = self.softmax(scores)
 
         # dropout
-        if self.dropout > 0:
-            weights = Dropout(self.dropout)(weights)
+        weights = self.dropout(weights)
 
         # attention output (weighted sum of value vectors)
         attn_output = weights @ v
