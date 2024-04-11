@@ -85,7 +85,7 @@ class Embedding(nn.Module):
         super().__init__()
         self.weight = nn.Parameter(torch.rand(num_embeddings, embedding_dim))
 
-    def forward(self, x: torch.LongTensor) -> Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         assert x.dtype == torch.int64
         return self.weight[x]
 
