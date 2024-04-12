@@ -134,7 +134,7 @@ class InferenceSampler:
         self.context_window = context_window
         self.device = device
     
-    def greedy(self, prompt: str) -> str:
+    def greedy(self, prompt: str, print_progress: bool=False) -> str:
         """
         Outputs most likely next token given previous tokens.
         """
@@ -142,19 +142,25 @@ class InferenceSampler:
         
         with torch.no_grad():
             input = self.vocab.tokens(prompt, self.device, sos=self.vocab.sos)
-            toks_to_generate = self.context_window - len(input) + 1
-            if toks_to_generate <= 0:
-                raise ValueError(f'prompt (with sos) of length ({len(input)}) ' 
-                                 f'too large for context window '
-                                 f'({self.context_window})')
+            toks_to_generate = self._toks_to_generate(input)
             output = ''
             # autoregressive token generation loop
-            for _ in range(toks_to_generate):
-                probs = self.model(input, softmax=True)[-1] # probs of last tok
+            for step in range(toks_to_generate):
+                output_probs = self.model(input, softmax=True) # output probs
+                if print_progress:
+                    output_toks = torch.argmax(output_probs, dim=-1) 
+                    print(f'Step {step:2d} input:  {input.tolist()}')
+                    print(f'Step {step:2d} output: {output_toks.tolist()}\n')
+                probs = output_probs[-1] # probs of last token
                 sample = torch.argmax(probs, dim=-1, keepdim=True) # greedy
                 next_word = self.vocab.words(sample) # convert token to word
                 output += next_word # append word to output string
                 input = torch.cat([input, sample]) # append token to input list
+                
+            if print_progress:
+                output_toks = torch.argmax(output_probs, dim=-1) 
+                print(f'Step {step+1:2d} input:  {input.tolist()}')
+                print(f'Step {step+1:2d} output: {output_toks.tolist()}')
 
         self.model.train()
         return output
@@ -172,21 +178,19 @@ class InferenceSampler:
             sorted, indices = probs.sort(descending=True)
             # cumulative sums 
             cumsum = sorted.cumsum(dim=-1)
+            # indices of sums greater than p
+            idxs = (cumsum >= 0).nonzero()
             # index of lowest sum greater than p
-            idx = (cumsum >= p).nonzero()[0,0]
+            idx = idxs[0,0] if len(idxs) > 0 else None
             # indices of probs tensor which do not contribute to the sum
-            non_contributing_indices = indices[idx + 1:]
+            discard_idxs = indices[idx + 1:] if idx is not None else []
             # set prob of non contributing indices to zero
-            probs[non_contributing_indices] = 0
+            probs[discard_idxs] = 0
 
         self.model.eval()
         with torch.no_grad():
             input = self.vocab.tokens(prompt, self.device, sos=self.vocab.sos)
-            toks_to_generate = self.context_window - len(input) + 1
-            if toks_to_generate <= 0:
-                raise ValueError(f'prompt (with sos) of length ({len(input)}) ' 
-                                 f'too large for context window '
-                                 f'({self.context_window})')
+            toks_to_generate = self._toks_to_generate(input)
             output = ''
             # autoregressive token generation loop
             for _ in range(toks_to_generate):
@@ -202,27 +206,69 @@ class InferenceSampler:
         self.model.train()
         return output
     
-    # def beam_search(self, prompt: str, context: int, 
-    #                 width: float, temp: float=1) -> str:
-    #     """
-    #     Perform beam search output generation, with optional temperature.
-    #     """
-    #     self.model.eval()
-    #     input = self.vocab.tokens(prompt, self.device, sos=self.vocab.sos)
-    #     beams = [(input, 0.0)]
-    #     # autoregressive token generation loop
-    #     for _ in range(context):
-    #         # loop over current beams
-    #         for beam in beams:
-    #             with torch.no_grad():
-    #                 logits = self.model(input)
-    #             logits /= temp # temperature scaling
-    #             probs = layers.Softmax(-1)(logits)[-1] # full prob dist
-    #             indices = torch.argsort(probs)[:width] # highest prob indices
-    #             # loop over new branches
-    #             for i in indices:
-    #                 next_word = self.vocab.words(i)
+    def beam_search(self, prompt: str, width: float, temp: float=1, 
+                    print_beams: bool=False) -> str:
+        """
+        Perform beam search output generation, with optional temperature.
+        """
+        self.model.eval()
+        input = self.vocab.tokens(prompt, self.device, sos=self.vocab.sos)
 
+        # we will store the beam in a min heap queue, which allows for 
+        # efficient retrieval of the beam with the lowest score
+        heap = [(0.0, torch.tensor([], dtype=torch.long, device=self.device))]
         
-    #     self.model.train()
-    #     return output
+        # autoregressive token generation loop
+        toks_to_generate = self._toks_to_generate(input)
+        for _ in range(toks_to_generate):
+            # loop over beam heap (use copy so that we can modify original heap)
+            heap_copy = heap[:]
+            for score, beam in heap_copy:
+                beam_input = torch.cat([input, beam])
+                with torch.no_grad():
+                    logits = self.model(beam_input)
+                logits /= temp # temperature scaling
+                probs = layers.Softmax(-1)(logits)[-1] # full prob dist
+                # highest probability indices - give new branches to explore
+                indices = torch.argsort(probs, descending=True)[:width] 
+                # loop over new branches
+                for i in indices:
+                    # compute score
+                    p = probs[i]
+                    new_score = score - torch.log(p).item()
+                    # push to heap if heap is too short
+                    if len(heap) < width:
+                        new_beam = torch.cat([beam, i.unsqueeze(0)])
+                        heapq.heappush(heap, (new_score, new_beam))
+                    # pushpop to heap if new_score is bigger than lowest score
+                    elif new_score > heap[0][0]:
+                        new_beam = torch.cat([beam, i.unsqueeze(0)])
+                        heapq.heappushpop(heap, (new_score, new_beam))
+
+        if print_beams:
+            print(heap)
+
+        # find beam with highest score
+        _, max_beam = max(heap, key=lambda x: x[0])
+
+        # convert to string
+        output = self.vocab.words(max_beam)
+        
+        self.model.train()
+
+        return output
+
+
+    # ------------------------- Utility functions --------------------------
+    
+    def _toks_to_generate(self, input):
+        """
+        Utility function. Given input prompt returns number of tokens to 
+        generate before resulting input is too large for context window.
+        """
+        toks = self.context_window - len(input) + 1
+        if toks <= 0:
+            raise ValueError(f'prompt (with sos) of length ({len(input)}) ' 
+                             f'too large for context window '
+                             f'({self.context_window})')
+        return toks
