@@ -485,8 +485,12 @@ class Transformer(nn.Module):
             self.de_embed
         )
 
-    def forward(self, x: Tensor) -> Tensor:
-        return self.layer_stack(x) 
+    def forward(self, x: Tensor, softmax: bool=False) -> Tensor:
+        output = self.layer_stack(x)
+        if softmax:
+            return self.softmax(output)
+        else:
+            return output
     
     def greedy_output(self, x: Tensor) -> Tensor:
         """
