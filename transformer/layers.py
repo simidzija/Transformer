@@ -145,23 +145,25 @@ class PositionalEncoding(nn.Module):
     Adds the matrix PE to the input tensor. PE is of shape (seq_len, d_model)
     and contains the following matrix elements:
 
-    even features: PE(pos, 2i) = sin(pos / 10000**(2i / d_model))
-    odd features: PE(pos, 2i + 1) = cos(pos / 10000**(2i / d_model))
+    even features: PE(pos, 2i) = sin(pos / n**(2i / d_model))
+    odd features: PE(pos, 2i + 1) = cos(pos / n**(2i / d_model))
     """
 
-    def __init__(self, d_model: int, max_words: int=1000, dropout: float=0.0):
+    def __init__(self, n: int, d_model: int, max_words: int=1000, 
+                 dropout: float=0.0):
         super().__init__()
 
         self.d_model = d_model
         self.max_words = max_words
         self.dropout = Dropout(dropout)
+        self.n = n
 
         pos = torch.arange(max_words) # word positions
         idx_even = torch.arange(0, d_model, 2) # even word vector features
 
         pe = torch.empty(max_words, d_model) # positional encoding matrix
 
-        arg = pos[:, None] / 10000**(idx_even / d_model) # argument to sin / cos
+        arg = pos[:, None] / n**(idx_even / d_model) # argument to sin / cos
         pe[:, 0::2] = torch.sin(arg) # even features
         pe[:, 1::2] = torch.cos(arg) # odd features 
 
@@ -456,10 +458,11 @@ class Transformer(nn.Module):
         - Linear (de-embedding) layer
     """
 
-    def __init__(self, vocab: int, d_model: int, num_heads: int, 
+    def __init__(self, vocab: int, n_pe:int, d_model: int, num_heads: int, 
                  num_stacks: int, d_ff: int, dropout: float=0.0):
         super().__init__()
         self.vocab = vocab
+        self.n_pe = n_pe
         self.d_model = d_model
         self.num_heads = num_heads
         self.num_stacks = num_stacks
@@ -468,7 +471,7 @@ class Transformer(nn.Module):
 
         # layers
         self.embed = Embedding(vocab, d_model)
-        self.pe = PositionalEncoding(d_model, dropout=dropout)
+        self.pe = PositionalEncoding(n_pe, d_model, dropout=dropout)
         self.decoder_stack = Sequential(*[
             Decoder(d_model, num_heads, d_ff, dropout) 
             for _ in range(num_stacks)])
