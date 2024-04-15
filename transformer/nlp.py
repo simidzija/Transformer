@@ -15,11 +15,8 @@ class Vocab():
         - tokenize_from_file: a wrapper over `tokens` which takes a file path
           as input and produces an int list
     """
-    def __init__(self, filepath, sos, unk, pad, pattern):
+    def __init__(self, filepath, pattern):
         self.pattern = pattern
-        self.sos = sos
-        self.unk = unk
-        self.pad = pad
         with open(filepath, mode='r') as file:
             words = re.split(pattern, file.read())
             self.vocab = sorted(set(words))
@@ -29,20 +26,13 @@ class Vocab():
     def __len__(self):
         return len(self.words_to_tokens)
 
-    def tokens(self, str: str, tensor_device: bool=None, 
-               sos: bool=False) -> list[int] | torch.Tensor:
+    def tokens(self, str: str, tensor_device: bool=None) -> list[int] | torch.Tensor:
         """
         Converts a string into an int list or tensor. Returns tensor if 
-        tensor_device is given, else returns list. Appends start-of-sequence 
-        token if sos=True.
+        tensor_device is given, else returns list.
         """
-        word_lst = re.split(self.pattern, str)
-        tok_lst = [self.sos] if sos else []
-        for word in word_lst:
-            if word in self.words_to_tokens:
-                tok_lst.append(self.words_to_tokens[word])
-            else:
-                tok_lst.append(self.unk)
+        words = re.split(self.pattern, str)
+        tok_lst = [self.words_to_tokens[word] for word in words]
 
         if tensor_device is None:
             return tok_lst
@@ -57,12 +47,7 @@ class Vocab():
         Converts an integer list or tensor to a string of words.
         """
         tokens = tokens.tolist() if isinstance(tokens, torch.Tensor) else tokens
-        word_lst = []
-        for token in tokens:
-            if token in self.tokens_to_words:
-                word_lst.append(self.tokens_to_words[token])
-            else:
-                raise ValueError(f'{token} not a valid token')
+        word_lst = [self.tokens_to_words[token] for token in tokens]
 
         return ''.join(word_lst)
 
@@ -80,32 +65,26 @@ class Vocab():
 
 class TokenizedDataset(Dataset):
     """
-    A class for sectioning off a corpus into fixed size, tokenized, training 
+    A class for sectioning off a corpus into fixed size, tokenized training 
     examples. Each training example is a pair (input, target) where input is 
-    the same token sequence as target, but right-shifted by one position to 
-    accomodate the start-of-sequence token. 
+    the same token sequence as target, but right-shifted by one position.
     """
     def __init__(self, corpus: torch.LongTensor, context_window: int, 
-                 sos: int, pad: int, device: torch.device):
+                 device: torch.device):
         super().__init__()
 
         self.corpus = corpus
         self.context_window = context_window
-        self.sos = sos
-        self.pad = pad
         self.device = device
 
     def __len__(self):
-        return max(1, len(self.corpus) - self.context_window + 2)
+        return max(1, len(self.corpus) - self.context_window)
 
     def __getitem__(self, idx):
         assert idx >= 0 and idx < len(self), f'index {idx} out of range'
 
-        context = self.corpus[idx:idx + self.context_window - 1]
-        input = torch.cat([torch.tensor([self.sos], device=self.device), 
-                           context])
-        target = torch.cat([context, 
-                            torch.tensor([self.pad], device=self.device)])
+        input = self.corpus[idx : idx + self.context_window]
+        target = self.corpus[idx + 1 : idx + self.context_window + 1]
 
         return (input, target)
     
@@ -133,7 +112,7 @@ class InferenceSampler:
         self.model.eval()
         
         with torch.no_grad():
-            input = self.vocab.tokens(prompt, self.device, sos=self.vocab.sos)
+            input = self.vocab.tokens(prompt, self.device)
             toks_to_generate = self._toks_to_generate(input)
             output = ''
             # autoregressive token generation loop
@@ -181,7 +160,7 @@ class InferenceSampler:
 
         self.model.eval()
         with torch.no_grad():
-            input = self.vocab.tokens(prompt, self.device, sos=self.vocab.sos)
+            input = self.vocab.tokens(prompt, self.device)
             toks_to_generate = self._toks_to_generate(input)
             output = ''
             # autoregressive token generation loop
@@ -204,7 +183,7 @@ class InferenceSampler:
         Perform beam search output generation, with optional temperature.
         """
         self.model.eval()
-        input = self.vocab.tokens(prompt, self.device, sos=self.vocab.sos)
+        input = self.vocab.tokens(prompt, self.device)
 
         # we will store the beam in a min heap queue, which allows for 
         # efficient retrieval of the beam with the lowest score
@@ -260,7 +239,7 @@ class InferenceSampler:
         """
         toks = self.context_window - len(input) + 1
         if toks <= 0:
-            raise ValueError(f'prompt (with sos) of length ({len(input)}) ' 
+            raise ValueError(f'prompt of length ({len(input)}) ' 
                              f'too large for context window '
                              f'({self.context_window})')
         return toks

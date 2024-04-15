@@ -57,6 +57,9 @@ class Linear(nn.Module):
             return x @ self.weight.T + self.bias
         else:
             return x @ self.weight.T
+        
+    def __getitem__(self, idx):
+        return self.weight[idx]
 
 class Dropout(nn.Module):
     """
@@ -85,7 +88,8 @@ class Embedding(nn.Module):
 
     def __init__(self, num_embeddings: int, embedding_dim: int):
         super().__init__()
-        self.weight = nn.Parameter(torch.rand(num_embeddings, embedding_dim))
+        w = torch.randn((num_embeddings, embedding_dim))
+        self.weight = nn.Parameter(w)
 
     def forward(self, x: Tensor) -> Tensor:
         assert x.dtype == torch.int64
@@ -254,12 +258,19 @@ class MaskedMultiheadAttention(nn.Module):
         self.head_size = d_model // num_heads
         
         # projection matrices
-        self.wq = nn.Parameter(torch.rand(num_heads, d_model, self.head_size))
-        self.wk = nn.Parameter(torch.rand(num_heads, d_model, self.head_size))
-        self.wv = nn.Parameter(torch.rand(num_heads, d_model, self.head_size))
+        k = 1 / math.sqrt(d_model)
+        min, max = -k, k
+
+        wq = min + (max - min) * torch.rand(num_heads, d_model, self.head_size)
+        wk = min + (max - min) * torch.rand(num_heads, d_model, self.head_size)
+        wv = min + (max - min) * torch.rand(num_heads, d_model, self.head_size)
+        self.wq = nn.Parameter(wq)
+        self.wk = nn.Parameter(wk)
+        self.wv = nn.Parameter(wv)
 
         # post-concatenation matrix
-        self.wo = nn.Parameter(torch.rand(d_model, d_model))
+        wo = min + (max - min) * torch.rand(d_model, d_model)
+        self.wo = nn.Parameter(wo)
 
         # mask
         mask = torch.full((1000, 1000), -torch.inf).triu(1)
