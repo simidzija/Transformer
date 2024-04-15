@@ -20,17 +20,11 @@ class Vocab():
         self.sos = sos
         self.unk = unk
         self.pad = pad
-        self.words_to_tokens = {}
-        self.tokens_to_words = {}
         with open(filepath, mode='r') as file:
-            token = 0 # next token to be assigned
-            for line in file:
-                words = re.split(pattern, line, flags=re.IGNORECASE)
-                for word in words:
-                    if word not in self.words_to_tokens:
-                        self.words_to_tokens[word] = token
-                        self.tokens_to_words[token] = word
-                        token += 1
+            words = re.split(pattern, file.read())
+            self.vocab = sorted(set(words))
+            self.words_to_tokens = {w: t for t, w in enumerate(self.vocab)}
+            self.tokens_to_words = {t: w for t, w in enumerate(self.vocab)}
 
     def __len__(self):
         return len(self.words_to_tokens)
@@ -42,7 +36,7 @@ class Vocab():
         tensor_device is given, else returns list. Appends start-of-sequence 
         token if sos=True.
         """
-        word_lst = re.split(self.pattern, str, flags=re.IGNORECASE)
+        word_lst = re.split(self.pattern, str)
         tok_lst = [self.sos] if sos else []
         for word in word_lst:
             if word in self.words_to_tokens:
@@ -78,12 +72,10 @@ class Vocab():
         integer list.
         """
         
-        tokens = []
         with open(filepath, mode='r') as file:
-            for line in file:
-                tokens.extend(self.tokens(line))
+            toks = self.tokens(file.read())
 
-        return tokens
+        return toks
     
 
 class TokenizedDataset(Dataset):
