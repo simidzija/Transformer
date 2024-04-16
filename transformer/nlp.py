@@ -1,3 +1,14 @@
+"""
+Natural language processing tools useful for language model training and 
+inference. Includes the following classes:
+
+- Vocab: class for defining a vocabulary given a corpus of text. Provides 
+  methods for converting strings to tokens and vice versa.
+- TokenizedDataset: class for constructing language model training sets.
+- InferenceSampler: class for autoregressive token generation.
+"""
+
+
 import re
 import heapq
 import torch
@@ -15,6 +26,7 @@ class Vocab():
         - tokenize_from_file: a wrapper over `tokens` which takes a file path
           as input and produces an int list
     """
+
     def __init__(self, filepath, pattern):
         self.pattern = pattern
         with open(filepath, mode='r') as file:
@@ -31,6 +43,7 @@ class Vocab():
         Converts a string into an int list or tensor. Returns tensor if 
         tensor_device is given, else returns list.
         """
+
         words = re.split(self.pattern, str)
         tok_lst = [self.words_to_tokens[word] for word in words]
 
@@ -46,6 +59,7 @@ class Vocab():
         """
         Converts an integer list or tensor to a string of words.
         """
+
         tokens = tokens.tolist() if isinstance(tokens, torch.Tensor) else tokens
         word_lst = [self.tokens_to_words[token] for token in tokens]
 
@@ -69,6 +83,7 @@ class TokenizedDataset(Dataset):
     examples. Each training example is a pair (input, target) where input is 
     the same token sequence as target, but right-shifted by one position.
     """
+
     def __init__(self, corpus: torch.LongTensor, context_window: int, 
                  device: torch.device):
         super().__init__()
@@ -94,10 +109,13 @@ class InferenceSampler:
     A class for autoregressive inference sampling according to a specified 
     model and vocabulary. Provides the following methods for generating output 
     text given a prompt string:
-        - greedy: outputs most likely next token given previous tokens
+        - greedy: outputs most likely next token
         - top_p: for each output postion samples from smallest number of tokens 
-          with a cumulative probability greater than p.
+          with a cumulative probability greater than p
+        - beam_search: searches for highest likelihood output by tracking fixed 
+          number of most promising output branches
     """
+
     def __init__(self, model: Transformer, vocab: Vocab, context_window: int, 
                  device: torch.device):
         self.model = model
@@ -105,23 +123,27 @@ class InferenceSampler:
         self.context_window = context_window
         self.device = device
     
-    def greedy(self, prompt: str, print_progress: bool=False) -> str:
+    def greedy(self, prompt: str, num_tokens: int, 
+               print_progress: bool=False) -> str:
         """
-        Outputs most likely next token given previous tokens.
+        Generate num_tokens using greedy sampling.
         """
         self.model.eval()
         
         with torch.no_grad():
             input = self.vocab.tokens(prompt, self.device)
-            toks_to_generate = self._toks_to_generate(input)
-            output = ''
+            output = prompt
+
             # autoregressive token generation loop
-            for step in range(toks_to_generate):
+            for step in range(num_tokens):
+
                 output_probs = self.model(input, softmax=True) # output probs
+
                 if print_progress:
                     output_toks = torch.argmax(output_probs, dim=-1) 
                     print(f'Step {step:2d} input:  {input.tolist()}')
                     print(f'Step {step:2d} output: {output_toks.tolist()}\n')
+
                 probs = output_probs[-1] # probs of last token
                 sample = torch.argmax(probs, dim=-1, keepdim=True) # greedy
                 next_word = self.vocab.words(sample) # convert token to word
@@ -134,11 +156,13 @@ class InferenceSampler:
                 print(f'Step {step+1:2d} output: {output_toks.tolist()}')
 
         self.model.train()
+
         return output
     
-    def top_p(self, prompt: str, temp: float=1, p: float=0.9) -> str:
+    def top_p(self, prompt: str, num_tokens: int, temp: float=1, 
+              p: float=0.9) -> str:
         """
-        Perform top_p sampling, with optional temperature. 
+        Generate num_tokens using top_p sampling, with optional temperature. 
         """
 
         def top_p_dist(probs: torch.Tensor, p: float) -> torch.Tensor:
@@ -150,7 +174,7 @@ class InferenceSampler:
             # cumulative sums 
             cumsum = sorted.cumsum(dim=-1)
             # indices of sums greater than p
-            idxs = (cumsum >= 0).nonzero()
+            idxs = (cumsum >= p).nonzero()
             # index of lowest sum greater than p
             idx = idxs[0,0] if len(idxs) > 0 else None
             # indices of probs tensor which do not contribute to the sum
@@ -161,10 +185,10 @@ class InferenceSampler:
         self.model.eval()
         with torch.no_grad():
             input = self.vocab.tokens(prompt, self.device)
-            toks_to_generate = self._toks_to_generate(input)
-            output = ''
+            output = prompt
+
             # autoregressive token generation loop
-            for _ in range(toks_to_generate):
+            for _ in range(num_tokens):
                 logits = self.model(input)
                 logits /= temp # temperature scaling
                 probs = layers.Softmax(-1)(logits)[-1] # full prob dist
@@ -177,11 +201,12 @@ class InferenceSampler:
         self.model.train()
         return output
     
-    def beam_search(self, prompt: str, width: float, temp: float=1, 
-                    print_beams: bool=False) -> str:
+    def beam_search(self, prompt: str, num_tokens: int, 
+                    width: float, temp: float=1) -> str:
         """
-        Perform beam search output generation, with optional temperature.
+        Generate num_tokens using beam search, with optional temperature.
         """
+        
         self.model.eval()
         input = self.vocab.tokens(prompt, self.device)
 
@@ -190,56 +215,57 @@ class InferenceSampler:
         heap = [(0.0, torch.tensor([], dtype=torch.long, device=self.device))]
         
         # autoregressive token generation loop
-        toks_to_generate = self._toks_to_generate(input)
-        for _ in range(toks_to_generate):
-            # loop over beam heap (use copy so that we can modify original heap)
-            heap_copy = heap[:]
-            for score, beam in heap_copy:
+        for _ in range(num_tokens):
+
+            # create new heap for current inference step
+            new_heap = []
+
+            for score, beam in heap:
+                
+                # concatenate input prompt with current beam output
                 beam_input = torch.cat([input, beam])
+
+                # compute model output
                 with torch.no_grad():
                     logits = self.model(beam_input)
-                logits /= temp # temperature scaling
-                probs = layers.Softmax(-1)(logits)[-1] # full prob dist
-                # highest probability indices - give new branches to explore
+
+                # temperature scaling
+                logits /= temp 
+
+                # token probability distribution of last output position
+                probs = layers.Softmax(-1)(logits)[-1] 
+
+                # width highest probability indices (new branches to explore)
                 indices = torch.argsort(probs, descending=True)[:width] 
+
                 # loop over new branches
                 for i in indices:
-                    # compute score
-                    p = probs[i]
-                    new_score = score - torch.log(p).item()
-                    # push to heap if heap is too short
-                    if len(heap) < width:
-                        new_beam = torch.cat([beam, i.unsqueeze(0)])
-                        heapq.heappush(heap, (new_score, new_beam))
-                    # pushpop to heap if new_score is bigger than lowest score
-                    elif new_score > heap[0][0]:
-                        new_beam = torch.cat([beam, i.unsqueeze(0)])
-                        heapq.heappushpop(heap, (new_score, new_beam))
 
-        if print_beams:
-            print(heap)
+                    # probability of new leaf
+                    p = probs[i]
+
+                    # probability of entire beam, including new leaf
+                    new_score = score + torch.log(p).item()
+
+                    # push beam to new_heap if new_heap too small
+                    if len(new_heap) < width:
+                        new_beam = torch.cat([beam, i.unsqueeze(0)])
+                        heapq.heappush(new_heap, (new_score, new_beam))
+
+                    # pushpop to new_heap if new_score bigger than lowest score
+                    elif new_score > new_heap[0][0]:
+                        new_beam = torch.cat([beam, i.unsqueeze(0)])
+                        heapq.heappushpop(new_heap, (new_score, new_beam))
+
+            # update heap to new_heap
+            heap = new_heap
 
         # find beam with highest score
         _, max_beam = max(heap, key=lambda x: x[0])
 
         # convert to string
-        output = self.vocab.words(max_beam)
+        output = prompt + self.vocab.words(max_beam)
         
         self.model.train()
 
         return output
-
-
-    # ------------------------- Utility functions --------------------------
-    
-    def _toks_to_generate(self, input):
-        """
-        Utility function. Given input prompt returns number of tokens to 
-        generate before resulting input is too large for context window.
-        """
-        toks = self.context_window - len(input) + 1
-        if toks <= 0:
-            raise ValueError(f'prompt of length ({len(input)}) ' 
-                             f'too large for context window '
-                             f'({self.context_window})')
-        return toks
